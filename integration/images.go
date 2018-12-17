@@ -195,6 +195,9 @@ func (d *DockerFileBuilder) BuildImage(imageRepo, gcsBucket, dockerfilesPath, do
 	}
 	if b, err := strconv.ParseBool(os.Getenv("BENCHMARK")); err == nil && b {
 		benchmarkEnv = "BENCHMARK_FILE=/kaniko/benchmarks/" + dockerfile
+		benchmarkFile := path.Join("benchmarks", dockerfile)
+		dst := path.Join("benchmarks/run_"+os.Getenv("KOKORO_GITHUB_PULL_REQUEST_COMMIT"), dockerfile)
+		defer UploadFileToBucket(gcsBucket, benchmarkFile, dst)
 	}
 
 	// build kaniko image
