@@ -20,11 +20,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"path/filepath"
-	"syscall"
-
-	"github.com/GoogleContainerTools/kaniko/pkg/timing"
 
 	"github.com/karrick/godirwalk"
+
+	"github.com/GoogleContainerTools/kaniko/pkg/timing"
 
 	"github.com/GoogleContainerTools/kaniko/pkg/constants"
 
@@ -48,8 +47,14 @@ func NewSnapshotter(l *LayeredMap, d string) *Snapshotter {
 
 // Init initializes a new snapshotter
 func (s *Snapshotter) Init() error {
-	_, err := s.TakeSnapshotFS()
-	return err
+	s.l.Snapshot()
+	memFs := s.scanFs()
+	for f := range memFs {
+		if err := s.l.Add(f); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Key returns a string based on the current state of the file system
@@ -121,28 +126,7 @@ func (s *Snapshotter) TakeSnapshot(files []string) (string, error) {
 	return f.Name(), nil
 }
 
-// TakeSnapshotFS takes a snapshot of the filesystem, avoiding directories in the whitelist, and creates
-// a tarball of the changed files.
-func (s *Snapshotter) TakeSnapshotFS() (string, error) {
-	logrus.Info("Taking snapshot of full filesystem...")
-
-	f, err := ioutil.TempFile(snapshotPathPrefix, "")
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	// Some of the operations that follow (e.g. hashing) depend on the file system being synced,
-	// for example the hashing function that determines if files are equal uses the mtime of the files,
-	// which can lag if sync is not called. Unfortunately there can still be lag if too much data needs
-	// to be flushed or the disk does its own caching/buffering.
-	syscall.Sync()
-
-	s.l.Snapshot()
-	existingPaths := s.l.GetFlattenedPathsForWhiteOut()
-	t := util.NewTar(f)
-	defer t.Close()
-
+func (s *Snapshotter) scanFs() map[string]*godirwalk.Dirent {
 	timer := timing.Start("Walking filesystem")
 	// Save the fs state in a map to iterate over later.
 	memFs := map[string]*godirwalk.Dirent{}
@@ -162,6 +146,26 @@ func (s *Snapshotter) TakeSnapshotFS() (string, error) {
 	},
 	)
 	timing.DefaultRun.Stop(timer)
+	return memFs
+}
+
+// TakeSnapshotFS takes a snapshot of the filesystem, avoiding directories in the whitelist, and creates
+// a tarball of the changed files.
+func (s *Snapshotter) TakeSnapshotFS() (string, error) {
+	logrus.Info("Taking snapshot of full filesystem...")
+
+	f, err := ioutil.TempFile(snapshotPathPrefix, "")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	s.l.Snapshot()
+	existingPaths := s.l.GetFlattenedPathsForWhiteOut()
+	t := util.NewTar(f)
+	defer t.Close()
+
+	memFs := s.scanFs()
 
 	// First handle whiteouts
 	for p := range memFs {
@@ -180,7 +184,7 @@ func (s *Snapshotter) TakeSnapshotFS() (string, error) {
 		}
 	}
 
-	timer = timing.Start("Writing tar file")
+	timer := timing.Start("Writing tar file")
 	// Now create the tar.
 	for path := range memFs {
 		if util.CheckWhitelist(path) {
